@@ -155,7 +155,6 @@ class FrFT3DModule(nn.Module):
         
         if self.use_cache:
             self._conv_matrix_cache[cache_key] = M
-        self._conv_matrix_cache[cache_key] = M
         return M
 
     def FrFT3D(self, volume):
@@ -189,7 +188,10 @@ class FrFT3DModule(nn.Module):
         out = torch.fft.fftshift(out_w, dim=(2,3,4))
 
         if self.log_output:
-            out = torch.log1p(torch.abs(out))
+            mag   = torch.log1p(torch.abs(out))
+            phase = torch.angle(out)
+            return torch.cat([mag, phase], dim=1)
+
         return out
 
     def IFrFT3D(self, volume):
