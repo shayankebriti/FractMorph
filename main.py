@@ -118,7 +118,7 @@ def seed_everything(seed: int = 42):
 
 def initialize():
     """Run initialization routines."""
-    print_nvidia_smi()
+    # print_nvidia_smi()
     # print_cpu_info()
     # print_ram_info()
     # print_disk_info()
@@ -139,7 +139,7 @@ if __name__ == '__main__':
 
     # ---- TRAIN ----
     # RSTNet.load(weight_path="")
-    RSTNet.train(aug=True, save_every_epoch=100)
+    RSTNet.train(save_every_epoch=100)
     upload_weights_to_nextcloud(folder_name=f"weights/{model_name}")
 
     # ---- EVAL ----
