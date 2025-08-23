@@ -160,13 +160,18 @@ class FrFT3DModule(nn.Module):
 
     def FrFT3D(self, volume):
         """
-        Applies the 3D fractional Fourier transform (FrFT) to the input volume.
+        Applies the forward 3D fractional Fourier transform (FrFT).
         
         Parameters:
-        - volume: The input tensor (B, C, D, H, W) to apply the FrFT on.
+        - volume: torch.Tensor
+            Input tensor of shape (B, C, D, H, W).
         
         Returns:
-        - The transformed volume after applying the fractional Fourier transform in all three dimensions.
+        - torch.Tensor
+            - If log_output=False: complex output of shape (B, C, D, H, W).
+            - If log_output=True: real tensor of shape (B, 2*C, D, H, W), where the
+              first C channels are log1p(|out|) and the next C channels are the phase
+              angle of out.
         """
         device = self._resolve_device(volume)
         self.order.data = self.order.data.to(device)
@@ -189,13 +194,15 @@ class FrFT3DModule(nn.Module):
 
     def IFrFT3D(self, volume):
         """
-        Applies the inverse 3D fractional Fourier transform (IFrFT) to the input volume.
+        Applies the inverse 3D fractional Fourier transform (IFrFT).
         
         Parameters:
-        - volume: The input tensor (B, C, D, H, W) to apply the IFrFT on.
+        - volume: torch.Tensor
+            Input tensor of shape (B, C, D, H, W).
         
         Returns:
-        - The transformed volume after applying the inverse fractional Fourier transform in all three dimensions.
+        - torch.Tensor
+            Reconstructed tensor of shape (B, C, D, H, W).
         """
         device = self._resolve_device(volume)
         self.order.data = self.order.data.to(device)
