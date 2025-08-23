@@ -38,7 +38,6 @@ def print_nvidia_smi():
     except FileNotFoundError:
         print("nvidia-smi not found; ensure NVIDIA drivers are installed.")
 
-
 def print_cpu_info():
     print("\n=== CPU Info ===")
     print(f"Processor: {platform.processor()}")
@@ -61,7 +60,6 @@ def print_cpu_info():
         except Exception as e:
             print("Could not read /proc/cpuinfo:", e)
 
-
 def print_ram_info():
     print("\n=== RAM Info ===")
     vm = psutil.virtual_memory()
@@ -80,7 +78,6 @@ def print_ram_info():
         print(result.stdout)
     except Exception as e:
         print("Could not get RAM module info:", e)
-
 
 def print_disk_info():
     print("\n=== Disk Info ===")
@@ -105,7 +102,6 @@ def print_disk_info():
     except Exception as e:
         print("Could not get disk model info:", e)
 
-
 def seed_everything(seed: int = 42):
     """Seed random number generators for reproducibility."""
     random.seed(seed)
@@ -114,7 +110,6 @@ def seed_everything(seed: int = 42):
     torch.cuda.manual_seed(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
-
 
 def initialize():
     """Run initialization routines."""
@@ -126,7 +121,6 @@ def initialize():
     print(f"Torch Version: {torch.__version__}")
     seed_everything(0)
     init_acdc()
-
 
 if __name__ == '__main__':
     # ---- INIT ----
