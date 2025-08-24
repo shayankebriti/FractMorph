@@ -19,7 +19,7 @@ The figure below presents the architecture of the multi-domain Fractional Cross-
 ![Fractional Cross-Attention Module](figures/FCA.jpg)
 
 ## 3D Fractional Fourier Transform
-The images below display the magnitude and phase outputs of our 3D FrFT at various fractional orders. For illustration, only one 2D slice from the volume is shown.
+The images below display the magnitude and phase outputs of our implemented 3D FrFT applied to cardiac (top two rows) and cerebral (bottom two rows) medical images at different fractional orders. For illustration, only a single 2D slice from each volume is shown.
 
 ![FCA](figures/FrFT3D.jpg)
 
