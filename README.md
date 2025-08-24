@@ -21,7 +21,7 @@ The figure below presents the architecture of the multi-domain Fractional Cross-
 ## 3D Fractional Fourier Transform
 The images below display the magnitude and phase outputs of our implemented 3D FrFT applied to cardiac (top two rows) and cerebral (bottom two rows) medical images at different fractional orders. For illustration, only a single 2D slice from each volume is shown.
 
-![FCA](figures/FrFT3D.jpg)
+
 
 The implementation of the 3D FrFT can be found in [`modules/frft3d.py`](modules/frft3d.py).
 
