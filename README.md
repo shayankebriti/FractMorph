@@ -38,4 +38,4 @@ If you find this code useful in your work, please consider citing:
 
 ## Updates
 - `[08/23/2025]` The FrFT implementation became faster and more efficient.
-- `[08/19/2025]` The preprint [v1] became publicly available.
+- `[08/19/2025]` The preprint became publicly available.
