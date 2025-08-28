@@ -1,18 +1,20 @@
 import torch
 import math
-from functools import lru_cache
 import torch.nn as nn
 
 class FrFT3DModule(nn.Module):
-    def __init__(self, order=0.5, log_output=False, device_option='cuda', use_cache=True):
+    def __init__(self, order=0.5, log_output=False, device_option='cuda', use_cache=True, learnable_order=False):
         """
         Initializes the FrFT3DModule with specified parameters.
         
         Parameters:
         - order: The fractional Fourier transform order (default 0.5).
         - log_output: Whether to apply log transformation to the output (default False).
-        - device_option: Specifies the computation device ('cuda', 'cpu', or 'volume', default 'cuda').
-        - use_cache: Whether to use caching for intermediate results (default True).
+        - device_option: Specifies the computation device ('cuda', 'cpu', or 'volume'; default 'cuda').
+        - use_cache: Whether to cache intermediate constant matrices/vectors (default True).
+        - learnable_order: If True, 'order' is an nn.Parameter learned during training
+        (caching is automatically disabled to avoid stale graphs). If False (default),
+        'order' is stored as a non-trainable buffer and caching remains enabled.
         """
         super(FrFT3DModule, self).__init__()
         assert device_option in ('cuda', 'cpu', 'volume'), \
@@ -25,10 +27,15 @@ class FrFT3DModule(nn.Module):
         else:
             self.calc_device = None
 
-        self.order = nn.Parameter(torch.tensor([order], dtype=torch.float32))
+        self.learnable_order = learnable_order
+        if learnable_order:
+            self.order = nn.Parameter(torch.tensor(float(order), dtype=torch.float32))
+        else:
+            self.register_buffer('order', torch.tensor(float(order), dtype=torch.float32))
+
         self.log_output = log_output
-        self.use_cache = use_cache
-        
+        self.use_cache = use_cache and (not learnable_order)
+
         self._frft_mat_cache = {}
         self._transform_vec_cache = {}
         self._conv_matrix_cache = {}
@@ -40,119 +47,127 @@ class FrFT3DModule(nn.Module):
             return volume.device
         return self.order.device
 
-    def frft_mat(self, N, a, device):
-        cache_key = (N, a, str(device))
+    def frft_mat(self, N, a_scalar, device):
+        a_key = float(a_scalar)
+        cache_key = (int(N), a_key, str(device))
+
         if self.use_cache and cache_key in self._frft_mat_cache:
             return self._frft_mat_cache[cache_key]
-        
-        app_ord = 2
-        Evec = self.transform_vec(N, app_ord).to(device).to(dtype=torch.complex64)
-        even = 1 - (N % 2)
-        l = torch.tensor(list(range(0, N - 1)) + [N - 1 + even],
-                         device=device, dtype=torch.float32)
-        f = torch.diag(torch.exp(-1j * math.pi / 2 * a * l).to(device))
-        F = (N ** 0.5) * torch.einsum("ij,jk,ni->nk", f, Evec.T, Evec)
-        
+
+        with torch.no_grad():
+            app_ord = 2
+            Evec = self.transform_vec(N, app_ord).to(device).to(dtype=torch.complex64)
+            even = 1 - (N % 2)
+            l = torch.arange(0, N - 1, device=device, dtype=torch.float32)
+            l = torch.cat([l, torch.tensor([N - 1 + even], device=device, dtype=torch.float32)], dim=0)
+            phase = torch.exp(-1j * math.pi / 2.0 * a_key * l).to(torch.complex64)
+            f = torch.diag(phase)  # [N,N] complex
+            F = (N ** 0.5) * torch.einsum("ij,jk,ni->nk", f, Evec.T, Evec)
+            F = F.to(device).to(torch.complex64).detach()
+
         if self.use_cache:
-            self._frft_mat_cache[cache_key] = F.to(device)
-        return F.to(device)
+            self._frft_mat_cache[cache_key] = F
+        return F
 
     def transform_vec(self, N, app_ord):
-        cache_key = (N, app_ord)
+        cache_key = (int(N), int(app_ord))
         if self.use_cache and cache_key in self._transform_vec_cache:
             return self._transform_vec_cache[cache_key]
-    
+
         dev = self._resolve_device() if hasattr(self, "_resolve_device") else None
-    
-        if N < 3:
-            out = torch.eye(N, dtype=torch.float32, device=dev)
-            if self.use_cache:
-                self._transform_vec_cache[cache_key] = out
-            return out
-    
-        app_ord = int(app_ord / 2)
-        num_zeros = max(N - 1 - 2 * app_ord, 0)
-        s = torch.cat((
-            torch.tensor([0, 1], dtype=torch.float32, device=dev),
-            torch.zeros(num_zeros, dtype=torch.float32, device=dev),
-            torch.tensor([1], dtype=torch.float32, device=dev),
-        ))
-        if s.numel() != N:
-            if s.numel() > N:
-                s = s[:N]
+
+        with torch.no_grad():
+            if N < 3:
+                out = torch.eye(N, dtype=torch.float32, device=dev)
+                if self.use_cache:
+                    self._transform_vec_cache[cache_key] = out
+                return out
+
+            app_ord = int(app_ord // 2)
+            num_zeros = max(N - 1 - 2 * app_ord, 0)
+
+            s = torch.cat((
+                torch.tensor([0, 1], dtype=torch.float32, device=dev),
+                torch.zeros(num_zeros, dtype=torch.float32, device=dev),
+                torch.tensor([1], dtype=torch.float32, device=dev),
+            ))
+            if s.numel() != N:
+                if s.numel() > N:
+                    s = s[:N]
+                else:
+                    s = torch.cat((s, torch.zeros(N - s.numel(), dtype=torch.float32, device=dev)))
+
+            S = self.conv_matrix(N, s)
+            S = S + torch.diag(torch.fft.fft(s).real)
+
+            p, r = N, math.floor(N / 2)
+            P = torch.zeros((p, p), dtype=torch.float32, device=dev)
+            P[0, 0] = 1.0
+
+            sqrt2_inv = 1.0 / math.sqrt(2.0)
+            even = 1 - (p % 2)
+
+            row_idx = torch.arange(1, r - even + 1, device=dev)
+            P[row_idx, row_idx] = sqrt2_inv
+            P[row_idx, p - row_idx] = sqrt2_inv
+            if even:
+                P[r, r] = 1.0
+
+            row_idx_odd = torch.arange(r + 1, p, device=dev)
+            P[row_idx_odd, row_idx_odd] = -sqrt2_inv
+            P[row_idx_odd, p - row_idx_odd] = sqrt2_inv
+
+            CS = torch.einsum("ij,jk,ni->nk", S, P.T, P)
+
+            n2_floor_plus1 = math.floor(N / 2 + 1)
+            C2 = CS[:n2_floor_plus1, :n2_floor_plus1]
+            S2 = CS[n2_floor_plus1:N, n2_floor_plus1:N]
+
+            ec, vc = torch.linalg.eig(C2); ec, vc = ec.real, vc.real
+            es, vs = torch.linalg.eig(S2); es, vs = es.real, vs.real
+
+            qvc = torch.vstack((
+                vc,
+                torch.zeros((math.ceil(N / 2 - 1), math.floor(N / 2 + 1)), dtype=torch.float32, device=dev),
+            ))
+            SC2 = P @ qvc
+
+            qvs = torch.vstack((
+                torch.zeros((math.floor(N / 2 + 1), math.ceil(N / 2 - 1)), dtype=torch.float32, device=dev),
+                vs,
+            ))
+            SS2 = P @ qvs
+
+            idx_c = torch.argsort(-ec)
+            idx_s = torch.argsort(-es)
+            SC2 = SC2[:, idx_c]
+            SS2 = SS2[:, idx_s]
+
+            if N % 2 == 0:
+                S2C2 = torch.zeros((N, N + 1), dtype=torch.float32, device=dev)
+                SS2 = torch.hstack((SS2, torch.zeros((SS2.shape[0], 1), dtype=torch.float32, device=dev)))
+                S2C2[:, list(range(0, N + 1, 2))] = SC2
+                S2C2[:, list(range(1, N, 2))] = SS2
+                S2C2 = S2C2[:, torch.arange(S2C2.size(1), device=dev) != N - 1]
             else:
-                s = torch.cat((s, torch.zeros(N - s.numel(), dtype=torch.float32, device=dev)))
-    
-        S = self.conv_matrix(N, s)
-        S = S + torch.diag(torch.fft.fft(s).real)
-    
-        p, r = N, math.floor(N / 2)
-        P = torch.zeros((p, p), dtype=torch.float32, device=dev)
-        P[0, 0] = 1.0
-    
-        sqrt2_inv = 1.0 / math.sqrt(2.0)
-        even = 1 - (p % 2)
-    
-        row_idx = torch.arange(1, r - even + 1, device=dev)
-        P[row_idx, row_idx] = sqrt2_inv
-        P[row_idx, p - row_idx] = sqrt2_inv
-    
-        if even:
-            P[r, r] = 1.0
-    
-        row_idx_odd = torch.arange(r + 1, p, device=dev)
-        P[row_idx_odd, row_idx_odd] = -sqrt2_inv
-        P[row_idx_odd, p - row_idx_odd] = sqrt2_inv
-    
-        CS = torch.einsum("ij,jk,ni->nk", S, P.T, P)
-    
-        n2_floor_plus1 = math.floor(N / 2 + 1)
-        C2 = CS[:n2_floor_plus1, :n2_floor_plus1]
-        S2 = CS[n2_floor_plus1:N, n2_floor_plus1:N]
-    
-        ec, vc = torch.linalg.eig(C2)
-        es, vs = torch.linalg.eig(S2)
-        ec, vc, es, vs = ec.real, vc.real, es.real, vs.real
-    
-        qvc = torch.vstack((
-            vc,
-            torch.zeros((math.ceil(N / 2 - 1), math.floor(N / 2 + 1)), dtype=torch.float32, device=dev),
-        ))
-        SC2 = P @ qvc
-    
-        qvs = torch.vstack((
-            torch.zeros((math.floor(N / 2 + 1), math.ceil(N / 2 - 1)), dtype=torch.float32, device=dev),
-            vs,
-        ))
-        SS2 = P @ qvs
-    
-        idx_c = torch.argsort(-ec)
-        idx_s = torch.argsort(-es)
-        SC2 = SC2[:, idx_c]
-        SS2 = SS2[:, idx_s]
-    
-        if N % 2 == 0:
-            S2C2 = torch.zeros((N, N + 1), dtype=torch.float32, device=dev)
-            SS2 = torch.hstack((SS2, torch.zeros((SS2.shape[0], 1), dtype=torch.float32, device=dev)))
-            S2C2[:, list(range(0, N + 1, 2))] = SC2
-            S2C2[:, list(range(1, N, 2))] = SS2
-            S2C2 = S2C2[:, torch.arange(S2C2.size(1), device=dev) != N - 1]
-        else:
-            S2C2 = torch.zeros((N, N), dtype=torch.float32, device=dev)
-            S2C2[:, list(range(0, N + 1, 2))] = SC2
-            S2C2[:, list(range(1, N, 2))] = SS2
-    
+                S2C2 = torch.zeros((N, N), dtype=torch.float32, device=dev)
+                S2C2[:, list(range(0, N + 1, 2))] = SC2
+                S2C2[:, list(range(1, N, 2))] = SS2
+
+            S2C2 = S2C2.detach()
+
         if self.use_cache:
             self._transform_vec_cache[cache_key] = S2C2
         return S2C2
 
     def conv_matrix(self, N, s):
-        cache_key = (N, tuple(s.tolist()))
+        cache_key = (int(N), tuple(s.detach().cpu().tolist()))
         if self.use_cache and cache_key in self._conv_matrix_cache:
             return self._conv_matrix_cache[cache_key]
-    
-        M = torch.stack([torch.roll(s, shifts=i) for i in range(N)], dim=1)
-        
+
+        with torch.no_grad():
+            M = torch.stack([torch.roll(s, shifts=i) for i in range(N)], dim=1).detach()
+
         if self.use_cache:
             self._conv_matrix_cache[cache_key] = M
         return M
